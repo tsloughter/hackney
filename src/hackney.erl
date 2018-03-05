@@ -290,17 +290,18 @@ request(Method, #hackney_url{}=URL0, Headers0, Body, Options0) ->
   %% normalize the url encoding
   URL = hackney_url:normalize(URL0, PathEncodeFun),
 
+  #hackney_url{transport=Transport,
+    host = Host,
+    port = Port,
+    user = User,
+    raw_path = RawPath,
+    password = Password} = URL,
+
   ?report_trace("request", [{method, Method},
     {url, URL},
     {headers, Headers0},
     {body, Body},
     {options, Options0}]),
-
-  #hackney_url{transport=Transport,
-    host = Host,
-    port = Port,
-    user = User,
-    password = Password} = URL,
 
   Options = case User of
               <<>> ->
@@ -310,8 +311,16 @@ request(Method, #hackney_url{}=URL0, Headers0, Body, Options0) ->
                   {basic_auth, {User, Password}})
             end,
 
-  Headers1 = hackney_headers_new:new(Headers0),
+  HostBin = list_to_binary(Host),
+  PortBin = if Port =:= 80 ; Port =:= 443 -> <<>>; true -> <<":", (integer_to_binary(Port))/binary>> end,
+  ParentSpanCtx = ocp:with_child_span(<<"Sent.", HostBin/binary, PortBin/binary, RawPath/binary>>),
+  ocp:put_attributes(#{<<"http.host">> => HostBin,
+                       <<"http.method">> => atom_to_binary(Method, utf8),
+                       <<"http.path">> => RawPath}),
 
+  EncodedSpanCtx = oc_span_ctx_header:encode(ocp:current_span()),
+  Headers1 = hackney_headers_new:new([{oc_span_ctx_header:field_name(), EncodedSpanCtx} | Headers0]),
+  try
   case maybe_proxy(Transport, Host, Port, Options) of
     {ok, Ref, AbsolutePath} ->
       Request = make_request(
@@ -325,6 +334,11 @@ request(Method, #hackney_url{}=URL0, Headers0, Body, Options0) ->
       send_request(Ref, Request);
     Error ->
       Error
+  end
+
+  after
+      ocp:finish_span(),
+      ocp:with_span(ParentSpanCtx)
   end;
 request(Method, URL, Headers, Body, Options)
   when is_binary(URL) orelse is_list(URL) ->

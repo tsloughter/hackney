@@ -1,4 +1,6 @@
 _build
+_checkouts
+.rebar3
 ebin
 *.beam
 *.sw*
