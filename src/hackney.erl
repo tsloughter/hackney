@@ -39,6 +39,7 @@
 -include("hackney_lib.hrl").
 -include("hackney_internal.hrl").
 
+-include_lib("opencensus/include/opencensus.hrl").
 
 -type url() :: #hackney_url{} | binary().
 -export_type([url/0]).
@@ -313,12 +314,13 @@ request(Method, #hackney_url{}=URL0, Headers0, Body, Options0) ->
 
   HostBin = list_to_binary(Host),
   PortBin = if Port =:= 80 ; Port =:= 443 -> <<>>; true -> <<":", (integer_to_binary(Port))/binary>> end,
-  ParentSpanCtx = ocp:with_child_span(<<"Sent.", HostBin/binary, PortBin/binary, RawPath/binary>>),
-  ocp:put_attributes(#{<<"http.host">> => HostBin,
-                       <<"http.method">> => atom_to_binary(Method, utf8),
-                       <<"http.path">> => RawPath}),
-
-  EncodedSpanCtx = oc_span_ctx_header:encode(ocp:current_span()),
+  SpanCtx = oc_trace:start_span(<<HostBin/binary, PortBin/binary, RawPath/binary>>, ocp:current_span_ctx(),
+                                #{kind => ?SPAN_KIND_CLIENT,
+                                  attributes => #{<<"http.host">> => HostBin,
+                                                  <<"http.method">> => atom_to_binary(Method, utf8),
+                                                  <<"http.path">> => RawPath}}),
+  ocp:with_span_ctx(SpanCtx),
+  EncodedSpanCtx = oc_span_ctx_header:encode(ocp:current_span_ctx()),
   Headers1 = hackney_headers_new:new([{oc_span_ctx_header:field_name(), EncodedSpanCtx} | Headers0]),
   try
   case maybe_proxy(Transport, Host, Port, Options) of
@@ -337,8 +339,7 @@ request(Method, #hackney_url{}=URL0, Headers0, Body, Options0) ->
   end
 
   after
-      ocp:finish_span(),
-      ocp:with_span(ParentSpanCtx)
+      ocp:finish_span()
   end;
 request(Method, URL, Headers, Body, Options)
   when is_binary(URL) orelse is_list(URL) ->
