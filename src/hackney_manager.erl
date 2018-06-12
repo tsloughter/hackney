@@ -31,6 +31,7 @@
   terminate/2, code_change/3]).
 
 -include("hackney.hrl").
+-include_lib("opencensus/include/opencensus.hrl").
 
 -record(request, {ref,
   pid,
@@ -38,6 +39,7 @@
   state}).
 
 -record(request_info, {pool,
+  tags,
   start_time,
   host}).
 
@@ -294,9 +296,13 @@ init(_) ->
 handle_call({new_request, Pid, Ref, Client}, _From, #mstate{pids=Pids}=State) ->
   %% get pool name
   Pool = proplists:get_value(pool, Client#client.options, default),
+  Tags = oc_tags:new(#{%% http_client_method => Client#client.method,
+                       %% http_client_path => Client#client.path,
+                       http_client_host => Client#client.host}),
   %% set requInfo
   StartTime = os:timestamp(),
   ReqInfo = #request_info{pool=Pool,
+                          tags=Tags,
                           start_time=StartTime,
                           host=Client#client.host},
   %% start the request
@@ -610,16 +616,19 @@ init_metrics() ->
   _ = metrics:new(Engine, counter, [hackney, finished_requests]),
   Engine.
 
-start_request(#request_info{host=Host}, #mstate{metrics=Engine}) ->
+start_request(#request_info{host=Host, tags=Tags}, #mstate{metrics=Engine}) ->
+  _ = oc_stat:record(Tags, 'opencensus.io/http/client/sent_bytes', 0),
   _ = metrics:increment_counter(Engine, [hackney, Host, nb_requests]),
   _ =  metrics:increment_counter(Engine, [hackney, nb_requests]),
   _ = metrics:increment_counter(Engine, [hackney, total_requests]),
   ok.
 
 
-finish_request(#request_info{start_time=Begin, host=Host},
+finish_request(#request_info{start_time=Begin, host=Host, tags=Tags},
                #mstate{metrics=Engine}) ->
+    io:format("FINISH REQUEST~~~~~~~n"),
   RequestTime = timer:now_diff(os:timestamp(), Begin)/1000,
+  _ = oc_stat:record(Tags, 'opencensus.io/http/client/roundtrip_latency', RequestTime),
   _ = metrics:update_histogram(Engine, [hackney, Host, request_time], RequestTime),
   _ = metrics:decrement_counter(Engine, [hackney, Host, nb_requests]),
   _ = metrics:decrement_counter(Engine, [hackney, nb_requests]),
